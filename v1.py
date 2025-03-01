@@ -295,62 +295,104 @@ class VideoDownloader:
         print(f"All download methods failed for URL: {url}")
         return None
 
-    def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
-        """Process a single episode: extract number, download video and upload to S3"""
+    def extract_episode_number_safe(self, title, max_episode):
+        """A safer wrapper around extract_episode_number that handles edge cases better"""
+        if not title:
+            print(f"Cannot extract episode number from empty title")
+            return None
+        
         try:
-            # Get video info
+            print(f"Attempting to extract episode number from: '{title}'")
+            print(f"With max_episode set to: {max_episode}")
+            
+            # Direct implementation to avoid dependency on external function
+            # Extract numbers from the title
+            numbers = re.findall(r'\d+', title)
+            print(f"Found numbers in title: {numbers}")
+            
+            if not numbers:
+                print("No numbers found in title")
+                return None
+            
+            # Try to find episode number - typically the last number in the title
+            for num in reversed(numbers):
+                episode = int(num)
+                if 1 <= episode <= max_episode:
+                    print(f"Found valid episode number: {episode}")
+                    return episode
+            
+            print(f"No valid episode number found within range 1-{max_episode}")
+            return None
+            
+        except Exception as e:
+            print(f"Error in extract_episode_number_safe: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
+        print(f"\n==================================================")
+        print(f"PROCESSING VIDEO: {url}")
+        print(f"==================================================")
+        
+        try:
+            # Get video info with extra debugging
             try:
+                # Verify the imported functions are working
+                print(f"Calling get_video_info for URL: {url}")
                 duration, title = get_video_info(url)
+                
+                if not duration and not title:
+                    # Fallback method to get title if the imported function fails
+                    print("Attempting fallback method to get video title...")
+                    try:
+                        if self.yt_dlp_available:
+                            cmd = ["yt-dlp", "--get-title", "--no-playlist", url]
+                            result = subprocess.run(cmd, capture_output=True, text=True)
+                            if result.returncode == 0:
+                                title = result.stdout.strip()
+                                print(f"Got title via yt-dlp: {title}")
+                    except Exception as e:
+                        print(f"Fallback title extraction failed: {str(e)}")
+                    
+                print(f"Video title: '{title}'")
+                print(f"Video duration: {duration}")
+                
                 if not title:
                     print(f"❌ Could not retrieve video title for URL: {url}")
                     return False
-                
-                print(f"Processing video title: {title}")
-                print(f"Video duration: {duration} seconds")
             except Exception as e:
                 print(f"❌ Error retrieving video info: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 return False
             
-            # Extract episode number with better error handling
-            ep_num = None
-            try:
-                ep_num = extract_episode_number(title, max_episode)
-                if ep_num is None:
-                    print(f"❌ Could not extract episode number from title: '{title}'")
-                    return False
-            except Exception as e:
-                print(f"❌ Error extracting episode number: {str(e)}")
+            # Use our safer episode extraction function
+            ep_num = self.extract_episode_number_safe(title, max_episode)
+            if ep_num is None:
+                print(f"❌ Could not extract episode number from title: '{title}'")
                 return False
             
-            print(f"✓ Extracted episode number: {ep_num}")
+            print(f"✓ Successfully extracted episode number: {ep_num}")
             
-            # Check if this episode should be downloaded
             if ep_num not in episodes_list:
                 print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
                 return False
             
-            # Check if already processed
             episode_key = f"{drama_name}_ep{ep_num}"
             if episode_key in self.processed_episodes:
                 print(f"⚠ Episode {ep_num} already processed. Skipping.")
                 return True
             
-            # Check subtitles if in strict mode
-            if STRICT_MODE and not self.check_subtitles(url):
-                print(f"⚠ Skipping episode {ep_num} due to subtitle restrictions in strict mode")
-                return False
-            
             print(f"Processing {drama_name} - Episode {ep_num}")
             print(f"Video URL: {url}")
             
-            # Create temp directory for downloads
             episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
             os.makedirs(episode_dir, exist_ok=True)
             
-            # Prepare output path
             try:
                 video_id = url_to_id(url)
-                output_filename = f"{drama_name}_Ep{ep_num}_{video_id}.mp4"
+                output_filename = f"{drama_name}_Ep{ep_num}.mp4"
                 output_path = os.path.join(episode_dir, output_filename)
                 
                 downloaded_path = self.download_video(url, output_path)
