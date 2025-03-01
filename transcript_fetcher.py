@@ -94,63 +94,64 @@ dramas = {
     },
 }
 
-def get_video_info(url):
-    """EC2-optimized video info retrieval with consistent title formatting"""
-    try:
-        # First try through YouTube API
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        
-        for _ in range(3):  # Retry for EC2 flakiness
-            response = requests.get(f'https://www.youtube.com/oembed?url={url}&format=json', 
-                                   headers=headers)
+def _get_duration(url):
+    """EC2-optimized duration extraction with retry logic"""
+    for _ in range(RETRY_ATTEMPTS):
+        try:
+            response = requests.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }, timeout=10)
+            
             if response.status_code == 200:
-                data = response.json()
-                title = data['title']
-                print(f"[EC2 Debug] API Title: {title}")
-                # Standardize title format across environments
-                title = re.sub(r'\s*-\s*YouTube$', '', title)
-                return _get_duration(url), title
+                # Modern duration format
+                duration_match = re.search(r'"approxDurationMs":"(\d+)"', response.text)
+                if duration_match:
+                    return int(duration_match.group(1)) // 1000
                 
-        # Fallback to HTML parsing
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            title_match = re.search(r'<meta name="title" content="([^"]+)"', response.text)
-            if title_match:
-                title = title_match.group(1)
-                print(f"[EC2 Debug] HTML Title: {title}")
-                return _get_duration(url), title
-                
-    except Exception as e:
-        print(f"Video info error: {str(e)}")
-
-    # Final fallback to pytube
-    try:
-        yt = YouTube(url)
-        print(f"[EC2 Debug] Pytube Title: {yt.title}")
-        return yt.length, yt.title
-    except Exception as e:
-        print(f"Pytube fallback failed: {str(e)}")
-        return 0, 'Unknown Title'
+                # Legacy format fallback
+                duration_match = re.search(r'"duration":"PT(\d+H)?(\d+M)?(\d+S)?', response.text)
+                if duration_match:
+                    hours = int(duration_match.group(1)[:-1]) if duration_match.group(1) else 0
+                    minutes = int(duration_match.group(2)[:-1]) if duration_match.group(2) else 0
+                    seconds = int(duration_match.group(3)[:-1]) if duration_match.group(3) else 0
+                    return hours * 3600 + minutes * 60 + seconds
+                    
+        except Exception as e:
+            print(f"Duration extraction error: {str(e)}")
+            sleep(REQUEST_DELAY)
+    
+    return 0  # Fallback value
 
 def extract_episode_number(title, max_episode=None):
-    """Enhanced extraction for EC2 numeric titles"""
+    """Case-insensitive handling for last episode patterns"""
     print(f"\nRaw title received: {title}")
     
-    # Handle numeric titles (e.g., "45K")
-    if re.match(r'^\d+[kK]?$', title):
-        num = int(re.sub('[^0-9]', '', title))
-        print(f"Matched numeric title: {num}")
-        return num if max_episode and num <= max_episode else num
+    # Case-insensitive patterns with flexible whitespace
+    last_ep_patterns = [
+        (r'(\d+)(?:st|nd|rd|th)\s+last\s+episode', "ordinal_last"),  # 2nd last episode
+        (r'\blast\s+episode\b', "simple_last"),                      # last episode
+        (r'final\s+episode', "final_episode")                        # final episode
+    ]
     
-    # Original extraction logic for formatted titles
+    for pattern, pattern_type in last_ep_patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match and max_episode:
+            if pattern_type == "ordinal_last":
+                ordinal = int(match.group(1))
+                ep_num = max_episode - (ordinal - 1)
+            else:
+                ep_num = max_episode
+            print(f"Matched {pattern_type} pattern: {ep_num}")
+            return ep_num
+
+    # Existing patterns with case-insensitive matching
     patterns = [
-        (r'Episode (\d+)', "Standard episode"),
-        (r'\bEp(?:isode)?[ ]?(\d+)', "Ep prefix"),
-        (r'\bE(\d+)\b', "E prefix"),
-        (r'(\d+)(?:st|nd|rd|th) Episode', "Ordinal episode")
+        (r'episode\s+(\d+)', "Standard episode"),
+        (r'\bep(?:isode)?[ ]?(\d+)', "Ep prefix"),
+        (r'\be(\d+)\b', "E prefix"),
+        (r'(\d+)(?:st|nd|rd|th)\s+episode', "Ordinal episode"),
+        (r'\b(\d+)\s*-\s*\[eng\s+sub\]', "Number before subtitle")
     ]
     
     for pattern, desc in patterns:
@@ -162,6 +163,56 @@ def extract_episode_number(title, max_episode=None):
             
     print("No patterns matched")
     return None
+
+def get_video_info(url):
+    """Get video duration and title through HTML parsing"""
+    duration = 0
+    title = None
+    try:
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
+        }
+        
+        for _ in range(RETRY_ATTEMPTS):
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                # Extract title
+                title_match = re.search(r'"title":"([^"]+)"', response.text)
+                if title_match:
+                    title = title_match.group(1).replace('\\u0026', '&')
+                
+                # Extract duration
+                duration_match = re.search(r'"duration":"PT(\d+H)?(\d+M)?(\d+S)?', response.text)
+                if duration_match:
+                    hours = int(duration_match.group(1)[:-1]) if duration_match.group(1) else 0
+                    minutes = int(duration_match.group(2)[:-1]) if duration_match.group(2) else 0
+                    seconds = int(duration_match.group(3)[:-1]) if duration_match.group(3) else 0
+                    duration = hours * 3600 + minutes * 60 + seconds
+                else:
+                    ms_match = re.search(r'"approxDurationMs":"(\d+)"', response.text)
+                    if ms_match:
+                        duration = int(ms_match.group(1)) // 1000
+                if duration > 0:
+                    break
+            sleep(REQUEST_DELAY)
+    except Exception as e:
+        print(f"Error getting video info: {str(e)}")
+    
+    # Fallback to pytube
+    if duration == 0 or not title:
+        try:
+            yt = YouTube(url)
+            if not title:
+                title = yt.title
+            if duration == 0:
+                duration = yt.length
+        except Exception as e:
+            print(f"Pytube fallback failed: {str(e)}")
+    
+    return duration, title
 
 def get_transcripts(video_id):
     """Get transcripts with auto-translate fallback"""
