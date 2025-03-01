@@ -140,7 +140,7 @@ class VideoDownloader:
         
         # Get the directory of the current script
         # self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.cookie_path = '~/youtube_cookies.txt'
+        self.cookie_path = '/home/ec2-user/youtube_cookies.txt'
         self._verify_cookie_file()
     
     def _verify_cookie_file(self):
