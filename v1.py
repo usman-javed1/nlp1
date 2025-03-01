@@ -296,133 +296,107 @@ class VideoDownloader:
         return None
 
     def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
-        print(f"\n==================================================")
-        print(f"PROCESSING VIDEO: {url}")
-        print(f"==================================================")
+        """
+        Process a single episode: verify the extracted episode number from the title is in episodes_list.
+        If so, download and upload the video.
+        """
+        duration, title = get_video_info(url)
+        if not title:
+            print("❌ Could not retrieve video title, skipping episode")
+            return False
+        
+        ep_num = extract_episode_number(title, max_episode)
+        if ep_num is None:
+            print("❌ Could not extract episode number, skipping episode")
+            return False
+        
+        if ep_num not in episodes_list:
+            print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
+            return False
+        
+        episode_key = f"{drama_name}_ep{ep_num}"
+        if episode_key in self.processed_episodes:
+            print(f"⚠ Episode {ep_num} already processed. Skipping.")
+            return True
+        
+        print(f"Processing {drama_name} - Episode {ep_num}")
+        print(f"Video URL: {url}")
+        
+        episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
+        os.makedirs(episode_dir, exist_ok=True)
         
         try:
-            # Get proper video title using yt-dlp directly
-            title = None
-            duration = 0
+            video_id = url_to_id(url)
+            output_filename = f"{drama_name}_Ep{ep_num}.mp4"
+            output_path = os.path.join(episode_dir, output_filename)
             
-            if self.yt_dlp_available:
-                try:
-                    print("Getting video title using yt-dlp...")
-                    cmd = ["yt-dlp", "--get-title", "--no-playlist", url]
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode == 0:
-                        title = result.stdout.strip()
-                        print(f"yt-dlp title: '{title}'")
-                        
-                        # Also get duration
-                        cmd_duration = ["yt-dlp", "--get-duration", "--no-playlist", url]
-                        result_duration = subprocess.run(cmd_duration, capture_output=True, text=True)
-                        if result_duration.returncode == 0:
-                            duration_str = result_duration.stdout.strip()
-                            print(f"Duration string: {duration_str}")
-                            # Convert HH:MM:SS to seconds if needed
-                except Exception as e:
-                    print(f"yt-dlp title extraction failed: {str(e)}")
+            downloaded_path = self.download_video(url, output_path)
+            if not downloaded_path:
+                logger.error(f"Failed to download episode {ep_num}")
+                return False
             
-            # Fallback to the original method if yt-dlp failed
-            if not title:
-                try:
-                    print("Falling back to original get_video_info method...")
-                    duration, title = get_video_info(url)
-                    print(f"Original method title: '{title}'")
-                except Exception as e:
-                    print(f"Original title extraction failed: {str(e)}")
+            file_size = os.path.getsize(downloaded_path) / (1024 * 1024)
+            print(f"Downloaded video size: {file_size:.2f} MB")
             
-            # Last resort - try to get info from the URL or video ID
-            if not title or title.endswith('K'):  # If title looks like a view count (e.g., "72K")
-                try:
-                    print("Title looks like a view count, trying to extract from URL...")
-                    video_id = url_to_id(url)
-                    if video_id:
-                        # For Daraar episodes, try to guess the episode number from filename pattern
-                        if drama_name == "Daraar" and order_index is not None:
-                            # If we know this is episode 40 based on playlist order
-                            ep_num = int(episodes_list[0]) + order_index
-                            print(f"Using order-based episode number: {ep_num}")
-                            
-                            if ep_num in episodes_list:
-                                print(f"✓ Found episode {ep_num} in episodes list")
-                                
-                                # Rest of the processing logic...
-                                episode_key = f"{drama_name}_ep{ep_num}"
-                                if episode_key in self.processed_episodes:
-                                    print(f"⚠ Episode {ep_num} already processed. Skipping.")
-                                    return True
-                                
-                                print(f"Processing {drama_name} - Episode {ep_num}")
-                                
-                                # Create temp directory for downloads
-                                episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
-                                os.makedirs(episode_dir, exist_ok=True)
-                                
-                                # Download video
-                                output_filename = f"{drama_name}_Ep{ep_num}_{video_id}.mp4"
-                                output_path = os.path.join(episode_dir, output_filename)
-                                
-                                downloaded_path = self.download_video(url, output_path)
-                                if not downloaded_path:
-                                    logger.error(f"Failed to download episode {ep_num}")
-                                    return False
-                                
-                                # Upload to S3 and process as usual...
-                                # (rest of your existing upload logic)
-                                file_size = os.path.getsize(downloaded_path) / (1024 * 1024)
-                                print(f"Downloaded video size: {file_size:.2f} MB")
-                                
-                                s3_video_path = f"/videos/{drama_name}/{output_filename}"
-                                s3_url = self.s3.upload_file(downloaded_path, s3_video_path)
-                                if s3_url:
-                                    print(f"✓ Video uploaded to S3: {s3_url}")
-                                else:
-                                    print(f"✗ Failed to upload video to S3")
-                                    return False
-                                
-                                # Clean up local file
-                                try:
-                                    os.remove(downloaded_path)
-                                    print(f"✓ Removed temporary file: {downloaded_path}")
-                                except Exception as e:
-                                    print(f"⚠ Error removing temporary file: {str(e)}")
-                                
-                                self.processed_episodes.add(episode_key)
-                                print(f"✓ Marked episode as processed: {episode_key}")
-                                print(f"--------- FINISHED {drama_name} Episode {ep_num} ---------\n")
-                                return True
-                                
-                            else:
-                                print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
-                                return False
-                except Exception as e:
-                    print(f"URL-based episode detection failed: {str(e)}")
-            
-            # If we have a proper title, try to extract episode number
-            if title and not title.endswith('K'):
-                try:
-                    # Extract episode number from title
-                    match = re.search(r'Episode\s*(\d+)', title, re.IGNORECASE)
-                    if match:
-                        ep_num = int(match.group(1))
-                        print(f"✓ Extracted episode number from title: {ep_num}")
-                        
-                        # Proceed with normal processing
-                        # (rest of your code with episode processing)
-                    else:
-                        print(f"❌ Could not find episode pattern in title: '{title}'")
-                except Exception as e:
-                    print(f"❌ Error extracting episode number: {str(e)}")
+            remote_path = f"/videos/{drama_name}/{output_filename}"
+            s3_url = self.s3.upload_file(downloaded_path, remote_path)
+            if s3_url:
+                print(f"✓ Video uploaded to S3: {s3_url}")
             else:
-                print(f"❌ No valid title available to extract episode number")
+                print(f"✗ Failed to upload video to S3")
+                return False
             
-            return False
+            try:
+                os.remove(downloaded_path)
+                print(f"✓ Removed temporary file: {downloaded_path}")
+            except Exception as e:
+                print(f"⚠ Error removing temporary file: {str(e)}")
             
+            print("Looking for transcript files...")
+            transcript_base = os.path.join(
+                TRANSCRIPT_DIR, 
+                drama_name,
+                f"{drama_name}_ep{ep_num}"
+            )
+            transcript_files = [
+                f"{transcript_base}_English.txt",
+                f"{transcript_base}_Urdu_T.txt",
+                f"{transcript_base}_Urdu.txt"
+            ]
+            
+            transcript_count = 0
+            for transcript_file in transcript_files:
+                if os.path.exists(transcript_file):
+                    print(f"Found transcript: {transcript_file}")
+                    transcript_filename = os.path.basename(transcript_file)
+                    s3_transcript_path = f"/transcripts/{drama_name}/{transcript_filename}"
+                    tr_url = self.s3.upload_file(transcript_file, s3_transcript_path)
+                    if tr_url:
+                        print(f"✓ Uploaded transcript to S3: {tr_url}")
+                        transcript_count += 1
+            
+            if transcript_count == 0:
+                print("No transcript files found")
+            else:
+                print(f"✓ Processed {transcript_count} transcript files")
+            
+            try:
+                os.rmdir(episode_dir)
+            except:
+                pass
+            
+            self.processed_episodes.add(episode_key)
+            print(f"✓ Marked episode as processed: {episode_key}")
+            print(f"--------- FINISHED {drama_name} Episode {ep_num} ---------\n")
+            return True
+        
         except Exception as e:
             logger.error(f"Episode processing error: {str(e)}")
             print(f"✗ Error processing episode: {str(e)}")
+            try:
+                os.rmdir(episode_dir)
+            except:
+                pass
             return False
     
     def process_drama_sequentially(self, drama_name):
@@ -462,12 +436,21 @@ class VideoDownloader:
                 print("Falling back to pytube for playlist extraction...")
                 from pytube import Playlist
                 playlist = Playlist(data['link'])
-                playlist._video_regex = re.compile(r"\"url\":\"(/watch\?v=[\w-]*)")
+                # Updated regex to match modern YouTube JSON structure
+                playlist._video_regex = re.compile(r'"videoId":"([\w-]{11})"')
                 video_urls = list(playlist.video_urls)
                 total_episodes = len(video_urls)
                 print(f"Found {total_episodes} episodes using pytube")
+                
+                # Add validation for extracted URLs
+                video_urls = [url for url in video_urls if url.startswith('https://')]
+                if not video_urls:
+                    raise ValueError("No valid video URLs found in playlist")
+                    
             except Exception as e:
                 print(f"Pytube playlist extraction error: {str(e)}")
+                logger.error(f"Playlist extraction failed: {str(e)}")
+                return
         
         if not video_urls:
             print("No videos found in playlist. Aborting drama processing.")
