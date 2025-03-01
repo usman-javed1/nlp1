@@ -2,140 +2,173 @@ import os
 import re
 import requests
 from time import sleep
-from pytube import Playlist
+from pytube import Playlist, YouTube
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 
-# Configuration
-MIN_DURATION = 600  # 10 minutes in seconds
-RETRY_ATTEMPTS = 3
-REQUEST_DELAY = 1 
+# Define missing constants
+RETRY_ATTEMPTS = 3          # Number of retry attempts for HTTP requests and transcript fetching
+REQUEST_DELAY = 2           # Delay (in seconds) between retry attempts
+MIN_DURATION = 60           # Minimum duration (in seconds) for a video to be processed
 
-def generate_episode_data(total_episodes, manual_data=None):
-    
+def generate_episode_data(total_episodes, max_episodes=None, manual_data=None):
+    """
+    Returns a tuple (episodes_list, max_episode)
+    If manual_data is provided, use that as the list of episodes and set max_episode accordingly.
+    Otherwise, generate a list from 1 to total_episodes.
+    """
     if manual_data:
-        return manual_data
-    return [{"index": i + 1, "episode": i + 1} for i in range(total_episodes)]
-
+        if max_episodes is None:
+            max_episodes = max(manual_data)
+        return (manual_data, max_episodes)
+    return ([i + 1 for i in range(total_episodes)], max_episodes)
 
 dramas = {
     "Daraar": {
         "link": "https://www.youtube.com/playlist?list=PLdZNFVCDo_1cOWnp-bw3x8CxOw7bMxRt-",
-        "episodes": generate_episode_data(40)
+        "episodes": generate_episode_data(None, 40, [1, 2, 4, 6, 9, 40, 39])
     },
     "Baichain Dil": {
         "link": "https://www.youtube.com/playlist?list=PLB1BPYz25JSpGfcskNyX0DmwlXcNOvyT4",
-        "episodes": generate_episode_data(37)
+        "episodes": generate_episode_data(37, 37)
     },
     "Main Na Janoo": {
         "link": "https://www.youtube.com/watch?v=5Cun41G44dc&list=PLbVdwtmx18sviyRcmCCQirArY5DR1doQQ&index=34",
-        "episodes": generate_episode_data(31)
+        "episodes": generate_episode_data(31, 31)
     },
     "Parizaad": {
         "link": "https://www.youtube.com/watch?v=fwZ6JNfXezg&list=PLbVdwtmx18stXNeBl2fTxbHUsP-HbIYth",
-        "episodes": generate_episode_data(29)
+        "episodes": generate_episode_data(29, 29)
     },
     "Qabeel": {
         "link": "https://www.youtube.com/watch?v=4xUvwCzhyQs&list=PLqunGGXHQ5sEsPa8fkFyzvzxUd0e8FRv_&index=1",
-        "link": "https://www.youtube.com/watch?v=4xUvwCzhyQs&list=PLqunGGXHQ5sEsPa8fkFyzvzxUd0e8FRv_&index=1",
-        # "link": "https://www.youtube.com/watch?v=_p8bCk8pEv4&list=PLb2aaNHUy_gGbfcGbIOIDbWmpXVpurgGh&index=1",
-        "episodes": generate_episode_data(1)
+        "episodes": generate_episode_data(1, 1)
     },
     "Aye Ishq E Junoon": {
-        # "link": "https://www.youtube.com/watch?v=1HlBsY_7KOE&list=PLz2MrXbUSiBoaGl0Ia2Q-_G8md6k8DegO",
         "link": "https://www.youtube.com/watch?v=_p8bCk8pEv4&list=PLb2aaNHUy_gGbfcGbIOIDbWmpXVpurgGh&index=1",
-        "episodes": generate_episode_data(32)
+        "episodes": generate_episode_data(32, 32)
     },
     "Sotan": {
         "link": "https://www.youtube.com/watch?v=1HlBsY_7KOE&list=PLz2MrXbUSiBoaGl0Ia2Q-_G8md6k8DegO",
-        # 
-        "episodes": generate_episode_data(58)
+        "episodes": generate_episode_data(58, 58)
     },
     "Zard Patton Ka Bunn": {
         "link": "https://www.youtube.com/watch?v=Y3bPhqTEGSY&list=PLbVdwtmx18su3GY_B7miQbxmhbVh9KTDn",
-        # 
-        "episodes": generate_episode_data(29)
+        "episodes": generate_episode_data(29, 29)
     },
     "Darlings": {
-        # "link": "https://www.youtube.com/watch?v=3ZZn3haoRFA&list=PLs2CG9JU32b7iF3Iszyd63vxm47qeYysE",
         "link": "https://www.youtube.com/watch?v=Gr9UyxQYjO4&list=PLQTepLZOvCg5jD7ljW8Eg2C_HJNvGmicV",
-        "episodes": generate_episode_data(55)
+        "episodes": generate_episode_data(55, 55)
     },
     "Kaisa Mera Naseeb": {
         "link": "https://www.youtube.com/watch?v=XI8TJxKc3Kw&list=PLz2MrXbUSiBoojRUSDm1dUi4RdUIDtwXa",
-        # "link": "https://www.youtube.com/watch?v=FQxDh-pKXj0&list=PLbVdwtmx18sv59ZlGX7qmAj65AXF5iRNu",
-        "episodes": generate_episode_data(8)
+        "episodes": generate_episode_data(8, 8)
     },
     "Akhara": {
         "link": "https://www.youtube.com/watch?v=3ZZn3haoRFA&list=PLs2CG9JU32b7iF3Iszyd63vxm47qeYysE",
-        # "link": "https://www.youtube.com/watch?v=soj9FDuHBGU&list=PLeb83ChrfOzkYh3FJFiZ5hW8uZj6yaJ79&index=47",
-        "episodes": generate_episode_data(34)
+        "episodes": generate_episode_data(34, 34)
     },
     "Mohabbatain Chahatain": {
         "link": "https://www.youtube.com/watch?v=soj9FDuHBGU&list=PLeb83ChrfOzkYh3FJFiZ5hW8uZj6yaJ79&index=47",
-        # "link": "https://www.youtube.com/watch?v=8o7xs7MLpQA&list=PLb2aaNHUy_gHLxFkFX4uFSx-P4vxZ7jBr",
-        "episodes": generate_episode_data(6)
+        "episodes": generate_episode_data(6, 6)
     },
     "Jaan Se Pyara Juni": {
         "link": "https://www.youtube.com/watch?v=FQxDh-pKXj0&list=PLbVdwtmx18sv59ZlGX7qmAj65AXF5iRNu",
-        "episodes": generate_episode_data(34)
+        "episodes": generate_episode_data(34, 34)
     },
     "Me Kahani Hun": {
         "link": "https://www.youtube.com/watch?v=hLRuSVJ_Ynk&list=PLeb83ChrfOzkFzkenCQthTFLgPB5FsLan&index=12",
-        "episodes": generate_episode_data(12)
+        "episodes": generate_episode_data(12, 12)
     },
     "Tere Bina Mein Nahi": {
         "link": "https://www.youtube.com/watch?v=8o7xs7MLpQA&list=PLb2aaNHUy_gHLxFkFX4uFSx-P4vxZ7jBr",
-        "episodes": generate_episode_data(39)
+        "episodes": generate_episode_data(39, 39)
     },
     "Umm-e-Haniya": {
         "link": "https://www.youtube.com/watch?v=YxIb_BNJkI0&list=PLdZNFVCDo_1cFNYaFX9C5ZuQ3ZkL3nFGT&index=2",
-        "episodes": generate_episode_data(38)
+        "episodes": generate_episode_data(38, 38)
     },
     "Besharam": {
         "link": "https://www.youtube.com/watch?v=kLamSiob72Y&list=PL3y6etwW5z8JxbJp64nA4fmsF_7mgeJai",
-        "episodes": generate_episode_data(24)
+        "episodes": generate_episode_data(24, 24)
     },
-    
 }
 
-def get_video_duration(url):
-    """Get video duration through HTML parsing"""
+def extract_episode_number(title, max_episode=None):
+    """
+    Extracts the episode number from the title.
+    If the title contains phrases such as "last episode" or "final episode", it returns the max_episode.
+    If the title contains phrases like "2nd last", "second last", or "penultimate", it returns max_episode - 1.
+    Otherwise, it uses regex patterns to extract the episode number.
+    """
+    title_lower = title.lower()
+    if max_episode is not None:
+        if "last episode" in title_lower or "final episode" in title_lower:
+            return max_episode
+        if ("2nd last" in title_lower or "second last" in title_lower or "penultimate" in title_lower):
+            return max_episode - 1
+
+    patterns = [
+        r"Episode (\d+)",          # Matches "Episode 12"
+        r"\bEp(?:isode)?[ ]?(\d+)",  # Matches "Ep 12", "Ep12", "Episode12"
+        r"\bE(\d+)\b",             # Matches "E12"
+        r"\bep(\d+)\b"             # Matches "ep12"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+def get_video_info(url):
+    """Get video duration and title through HTML parsing"""
+    duration = 0
+    title = None
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
         }
         
         for _ in range(RETRY_ATTEMPTS):
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
-                # Method 1: Search for ISO 8601 duration
+                # Extract title
+                title_match = re.search(r'"title":"([^"]+)"', response.text)
+                if title_match:
+                    title = title_match.group(1).replace('\\u0026', '&')
+                
+                # Extract duration
                 duration_match = re.search(r'"duration":"PT(\d+H)?(\d+M)?(\d+S)?', response.text)
                 if duration_match:
                     hours = int(duration_match.group(1)[:-1]) if duration_match.group(1) else 0
                     minutes = int(duration_match.group(2)[:-1]) if duration_match.group(2) else 0
                     seconds = int(duration_match.group(3)[:-1]) if duration_match.group(3) else 0
-                    return hours * 3600 + minutes * 60 + seconds
-                
-                # Method 2: Search for milliseconds duration
-                ms_match = re.search(r'"approxDurationMs":"(\d+)"', response.text)
-                if ms_match:
-                    return int(ms_match.group(1)) // 1000
-                    
+                    duration = hours * 3600 + minutes * 60 + seconds
+                else:
+                    ms_match = re.search(r'"approxDurationMs":"(\d+)"', response.text)
+                    if ms_match:
+                        duration = int(ms_match.group(1)) // 1000
+                if duration > 0:
+                    break
             sleep(REQUEST_DELAY)
-            
     except Exception as e:
-        print(f"Duration error: {str(e)}")
+        print(f"Error getting video info: {str(e)}")
     
-    # Final fallback
-    print("⏱️  Using pytube fallback for duration")
-    try:
-        from pytube import YouTube
-        yt = YouTube(url)
-        return yt.length
-    except:
-        return 0
+    # Fallback to pytube
+    if duration == 0 or not title:
+        try:
+            yt = YouTube(url)
+            if not title:
+                title = yt.title
+            if duration == 0:
+                duration = yt.length
+        except Exception as e:
+            print(f"Pytube fallback failed: {str(e)}")
+    
+    return duration, title
 
 def get_transcripts(video_id):
     """Get transcripts with auto-translate fallback"""
@@ -159,58 +192,13 @@ def get_transcripts(video_id):
         if en_transcript:
             try:  # Auto-translate from English
                 ur_transcript = en_transcript.translate('ur')
-            except:
+            except Exception:
                 pass
 
     return (
         en_transcript.fetch() if en_transcript else None,
         ur_transcript.fetch() if ur_transcript else None
     )
-
-def process_dramas():
-    print("🚀 Starting transcript processing...")
-    
-    for drama_name, data in dramas.items():
-        print(f"\n📺 Processing drama: {drama_name}")
-        playlist = Playlist(data['link'])
-        playlist._video_regex = re.compile(r'"url":"(/watch\?v=[\w-]*)')
-        
-        print(f"🔍 Found {len(playlist.video_urls)} videos")
-        
-        for idx, url in enumerate(playlist.video_urls, 1):
-            print(f"\n📼 Episode {idx}: {url}")
-            
-            # Duration check
-            duration = get_video_duration(url)
-            print(f"⏱️  Duration: {duration//60}m {duration%60}s")
-            
-            if duration < MIN_DURATION:
-                print("⏭️  Skipping short video")
-                continue
-                
-            # Get transcripts
-            video_id = url_to_id(url)
-            print(f"🔧 Video ID: {video_id}")
-            
-            en_transcript, ur_transcript = None, None
-            for attempt in range(RETRY_ATTEMPTS):
-                try:
-                    en_transcript, ur_transcript = get_transcripts(video_id)
-                    break
-                except Exception as e:
-                    print(f"Attempt {attempt+1} failed: {str(e)}")
-                    sleep(REQUEST_DELAY)
-
-            # Save files
-            base_path = f"transcripts/{drama_name}_Ep_{idx}"
-            if en_transcript:
-                save_transcript(en_transcript, f"{base_path}_English_T.txt")
-                save_transcript(en_transcript, f"{base_path}_English.txt", False)
-            if ur_transcript:
-                save_transcript(ur_transcript, f"{base_path}_Urdu_T.txt")
-                save_transcript(ur_transcript, f"{base_path}_Urdu.txt", False)
-                
-            print("✅ Success!" if en_transcript or ur_transcript else "⏭️  No transcripts")
 
 def url_to_id(url):
     """Extract video ID from URL"""
@@ -235,6 +223,70 @@ def save_transcript(transcript, filename, with_timestamps=True):
                 f.write(f"[{entry['start']:.2f}] {entry['text']}\n")
         else:
             f.write(' '.join([entry['text'] for entry in transcript]))
+
+def process_dramas():
+    print("🚀 Starting transcript processing...")
+    
+    for drama_name, data in dramas.items():
+        print(f"\n📺 Processing drama: {drama_name}")
+        playlist = Playlist(data['link'])
+        # Adjust regex for video URL extraction (if needed)
+        playlist._video_regex = re.compile(r'"url":"(/watch\?v=[\w-]*)')
+        
+        print(f"🔍 Found {len(playlist.video_urls)} videos")
+        episodes_list, max_episode = data['episodes']
+        
+        for url in playlist.video_urls:
+            print(f"\n📼 Processing URL: {url}")
+            
+            # Get video info
+            duration, title = get_video_info(url)
+            if not title:
+                print("❌ Could not retrieve video title, skipping")
+                continue
+            print(f"📝 Title: {title}")
+            
+            # Extract episode number (including checks for last or 2nd last)
+            ep_num = extract_episode_number(title, max_episode)
+            if ep_num is None:
+                print("❌ Could not extract episode number, skipping")
+                continue
+            print(f"🔢 Extracted episode number: {ep_num}")
+            
+            # Check if episode is in the list
+            if ep_num not in episodes_list:
+                print(f"⏭️ Episode {ep_num} not in the download list, skipping")
+                continue
+            
+            # Duration check
+            print(f"⏱️  Duration: {duration//60}m {duration%60}s")
+            if duration < MIN_DURATION:
+                print("⏭️  Skipping short video")
+                continue
+                
+            # Get transcripts
+            video_id = url_to_id(url)
+            print(f"🔧 Video ID: {video_id}")
+            
+            en_transcript, ur_transcript = None, None
+            for attempt in range(RETRY_ATTEMPTS):
+                try:
+                    en_transcript, ur_transcript = get_transcripts(video_id)
+                    break
+                except Exception as e:
+                    print(f"Attempt {attempt+1} failed: {str(e)}")
+                    sleep(REQUEST_DELAY)
+
+            # Save files if transcripts are available
+            base_path = f"transcripts/{drama_name}_Ep_{ep_num}"
+            if en_transcript:
+                save_transcript(en_transcript, f"{base_path}_English_T.txt")
+                save_transcript(en_transcript, f"{base_path}_English.txt", with_timestamps=False)
+            if ur_transcript:
+                save_transcript(ur_transcript, f"{base_path}_Urdu_T.txt")
+                save_transcript(ur_transcript, f"{base_path}_Urdu.txt", with_timestamps=False)
+                
+            print("✅ Success!" if en_transcript or ur_transcript else "⏭️  No transcripts")
 
 if __name__ == "__main__":
     process_dramas()
