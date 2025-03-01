@@ -433,61 +433,16 @@ class VideoDownloader:
         
         if not video_urls:
             try:
-                print("\n=== DEBUGGING EC2 PYTUBE ISSUE ===")
-                print("Attempting pytube playlist extraction...")
+                print("Falling back to pytube for playlist extraction...")
                 from pytube import Playlist
                 playlist = Playlist(data['link'])
-                
-                print(f"Original playlist URL: {playlist._playlist_url}")
-                print(f"Current _video_regex patterns: {playlist._video_regex}")
-                
-                # EC2-specific fix: Use multiple regex patterns
-                new_regex_patterns = [
-                    r'{"videoId":"(.+?)"',
-                    r'"url":"(/watch\?v=.+?)"',
-                    r'\/watch\?v=([a-zA-Z0-9_-]{11})'
-                ]
-                playlist._video_regex = [re.compile(pattern) for pattern in new_regex_patterns]
-                print(f"Updated _video_regex patterns: {[p.pattern for p in playlist._video_regex]}")
-
-                # Force playlist parsing with retries
-                video_urls = []
-                for attempt in range(3):
-                    try:
-                        print(f"\nAttempt {attempt+1} to parse playlist:")
-                        video_urls = list(playlist.video_urls)
-                        print(f"Found {len(video_urls)} raw URLs in attempt {attempt+1}")
-                        print(f"Sample URLs: {video_urls[:3] if video_urls else 'None'}")
-                        if video_urls:
-                            break
-                    except Exception as e:
-                        print(f"Retry {attempt+1} failed: {type(e).__name__} - {str(e)}")
-                        time.sleep(2)
-
-                # Validate URLs
-                print("\nValidating extracted URLs:")
-                valid_urls = [url for url in video_urls if url.startswith('https://www.youtube.com/watch?v=')]
-                print(f"Found {len(valid_urls)} valid URLs out of {len(video_urls)} raw URLs")
-                if len(valid_urls) != len(video_urls):
-                    invalid_urls = set(video_urls) - set(valid_urls)
-                    print(f"Invalid URLs detected: {list(invalid_urls)[:3]} (showing first 3)")
-
-                video_urls = valid_urls
+                playlist._video_regex = re.compile(r"\"url\":\"(/watch\?v=[\w-]*)")
+                video_urls = list(playlist.video_urls)
                 total_episodes = len(video_urls)
-                print(f"Final URL count: {total_episodes}")
-                
-                if not video_urls:
-                    raise ValueError("No valid video URLs extracted after 3 attempts")
-                    
+                print(f"Found {total_episodes} episodes using pytube")
             except Exception as e:
-                print("\n=== EC2 EXTRACTION FAILURE DETAILS ===")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Error message: {str(e)}")
-                if hasattr(e, 'exc_info') and e.exc_info:
-                    print(f"Traceback: {e.exc_info}")
-                logger.error(f"EC2 Playlist extraction error: {str(e)}", exc_info=True)
-                return
-
+                print(f"Pytube playlist extraction error: {str(e)}")
+        
         if not video_urls:
             print("No videos found in playlist. Aborting drama processing.")
             return
@@ -537,6 +492,83 @@ class VideoDownloader:
         print(f"Successfully processed {completed_dramas}/{total_dramas} dramas")
         print("="*50)
         logger.info(f"Completed processing all dramas: {completed_dramas}/{total_dramas}")
+
+def extract_episode_number(title, max_episode):
+    """Enhanced version to handle numeric titles and K suffixes"""
+    try:
+        # First check if title is purely numeric
+        if title.isdigit():
+            num = int(title)
+            if 1 <= num <= max_episode:
+                return num
+            return None
+            
+        # Handle K suffix (e.g., 72K -> 72)
+        if title[-1].upper() == 'K' and title[:-1].isdigit():
+            num = int(title[:-1])
+            if 1 <= num <= max_episode:
+                return num
+            return None
+            
+        # Original extraction logic
+        match = re.search(r'(\d+)(?:/| of |\s)', title, re.IGNORECASE)
+        if match:
+            num = int(match.group(1))
+            if 1 <= num <= max_episode:
+                return num
+                
+        # Additional patterns for different numbering formats
+        patterns = [
+            r'^EP?\s?(\d+)',  # E01, EP 12, etc.
+            r'\b(\d+)\s*-\s*',  # Number at start of title
+            r'.*?(\d+)\s*$'  # Number at end of title
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, title, re.IGNORECASE)
+            if match:
+                num = int(match.group(1))
+                if 1 <= num <= max_episode:
+                    return num
+                    
+        return None
+    except Exception as e:
+        print(f"Episode extraction error: {str(e)}")
+        return None
+
+def get_video_info(url):
+    """Enhanced video info with EC2-specific fallback"""
+    try:
+        # Original implementation
+        yt = YouTube(url)
+        duration = yt.length
+        title = yt.title
+        
+        # EC2 fallback if duration is 0
+        if duration == 0 or not title:
+            print("Falling back to yt-dlp for video info")
+            cmd = [
+                'yt-dlp',
+                '--get-title',
+                '--get-duration',
+                '--no-warnings',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                output = result.stdout.strip().split('\n')
+                title = output[0] if len(output) > 0 else 'Unknown Title'
+                duration_str = output[1] if len(output) > 1 else '0'
+                
+                # Convert HH:MM:SS to seconds
+                parts = list(map(int, duration_str.split(':')))
+                duration = sum(x * 60**i for i, x in enumerate(reversed(parts)))
+                
+        return duration, title
+    except Exception as e:
+        print(f"Video info error: {str(e)}")
+        return 0, 'Unknown Title'
 
 if __name__ == "__main__":
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
