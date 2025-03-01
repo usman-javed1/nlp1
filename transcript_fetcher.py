@@ -102,6 +102,7 @@ def extract_episode_number(title, max_episode=None):
     Otherwise, it uses regex patterns to extract the episode number.
     """
     title_lower = title.lower()
+    print(f"Title: {title}")
     if max_episode is not None:
         if "last episode" in title_lower or "final episode" in title_lower:
             return max_episode

@@ -306,6 +306,7 @@ class VideoDownloader:
             return False
         
         ep_num = extract_episode_number(title, max_episode)
+        print(f"Episode number: {ep_num}")
         if ep_num is None:
             print("❌ Could not extract episode number, skipping episode")
             return False
