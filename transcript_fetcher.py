@@ -1,6 +1,8 @@
 import os
 import re
 import requests
+import json
+import html
 from time import sleep
 from pytube import Playlist, YouTube
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -124,95 +126,119 @@ def _get_duration(url):
     return 0  # Fallback value
 
 def extract_episode_number(title, max_episode=None):
-    """Case-insensitive handling for last episode patterns"""
-    print(f"\nRaw title received: {title}")
+    """Handle EC2-specific title formats"""
+    print(f"\n🔢 Extracting from: '{title}'")
     
-    # Case-insensitive patterns with flexible whitespace
-    last_ep_patterns = [
-        (r'(\d+)(?:st|nd|rd|th)\s+last\s+episode', "ordinal_last"),  # 2nd last episode
-        (r'\blast\s+episode\b', "simple_last"),                      # last episode
-        (r'final\s+episode', "final_episode")                        # final episode
-    ]
+    # Clean common EC2 title artifacts
+    clean_title = re.sub(r'\s*[kK]\b', '', title)  # Remove trailing K
+    clean_title = re.sub(r'\W+', ' ', clean_title).strip()
+    print(f"  🧹 Cleaned Title: '{clean_title}'")
     
-    for pattern, pattern_type in last_ep_patterns:
-        match = re.search(pattern, title, re.IGNORECASE)
-        if match and max_episode:
-            if pattern_type == "ordinal_last":
-                ordinal = int(match.group(1))
-                ep_num = max_episode - (ordinal - 1)
-            else:
-                ep_num = max_episode
-            print(f"Matched {pattern_type} pattern: {ep_num}")
-            return ep_num
+    # Check for numeric titles first
+    if clean_title.isdigit():
+        num = int(clean_title)
+        print(f"  🔍 Numeric Title: {num}")
+        if max_episode and num <= max_episode:
+            return num
+        print(f"  ❌ Exceeds max episode {max_episode}")
+        return None
 
-    # Existing patterns with case-insensitive matching
+    # Enhanced pattern matching
     patterns = [
-        (r'episode\s+(\d+)', "Standard episode"),
-        (r'\bep(?:isode)?[ ]?(\d+)', "Ep prefix"),
-        (r'\be(\d+)\b', "E prefix"),
-        (r'(\d+)(?:st|nd|rd|th)\s+episode', "Ordinal episode"),
-        (r'\b(\d+)\s*-\s*\[eng\s+sub\]', "Number before subtitle")
+        (r'(\d+)(?:st|nd|rd|th)\s+last', "ordinal_last", lambda m: max_episode - (int(m.group(1)) - 1)),
+        (r'\blast\s+episode', "simple_last", lambda _: max_episode),
+        (r'episode\s+(\d+)', "standard_ep", lambda m: int(m.group(1))),
+        (r'\bep?(\d+)\b', "compact_ep", lambda m: int(m.group(1))),
+        (r'\b(\d+)\s+-\s+', "number_prefix", lambda m: int(m.group(1)))
     ]
     
-    for pattern, desc in patterns:
-        match = re.search(pattern, title, re.IGNORECASE)
+    for pattern, desc, handler in patterns:
+        match = re.search(pattern, clean_title, re.IGNORECASE)
         if match:
-            num = int(match.group(1))
-            print(f"Matched {desc}: {num}")
-            return num if max_episode and num <= max_episode else num
-            
-    print("No patterns matched")
+            try:
+                num = handler(match)
+                print(f"  ✅ Matched {desc}: {num}")
+                if max_episode and num > max_episode:
+                    print(f"  ❌ Exceeds max episode {max_episode}")
+                    continue
+                return num
+            except Exception as e:
+                print(f"  🚨 Error in {desc} handler: {str(e)}")
+    
+    print("  ❌ No valid patterns matched")
     return None
 
 def get_video_info(url):
-    """Get video duration and title through HTML parsing"""
-    duration = 0
-    title = None
+    """EC2-optimized title extraction with full debugging"""
+    print(f"\n🔍 Processing URL: {url}")
+    
+    # Try YouTube API first
     try:
-        headers = {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            )
-        }
+        api_url = f'https://www.youtube.com/oembed?url={url}&format=json'
+        print(f"  📡 API Request: {api_url}")
+        response = requests.get(api_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }, timeout=15)
         
-        for _ in range(RETRY_ATTEMPTS):
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                # Extract title
-                title_match = re.search(r'"title":"([^"]+)"', response.text)
-                if title_match:
-                    title = title_match.group(1).replace('\\u0026', '&')
-                
-                # Extract duration
-                duration_match = re.search(r'"duration":"PT(\d+H)?(\d+M)?(\d+S)?', response.text)
-                if duration_match:
-                    hours = int(duration_match.group(1)[:-1]) if duration_match.group(1) else 0
-                    minutes = int(duration_match.group(2)[:-1]) if duration_match.group(2) else 0
-                    seconds = int(duration_match.group(3)[:-1]) if duration_match.group(3) else 0
-                    duration = hours * 3600 + minutes * 60 + seconds
-                else:
-                    ms_match = re.search(r'"approxDurationMs":"(\d+)"', response.text)
-                    if ms_match:
-                        duration = int(ms_match.group(1)) // 1000
-                if duration > 0:
-                    break
-            sleep(REQUEST_DELAY)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"  🔍 API Response: {json.dumps(data, indent=2)}")
+            raw_title = data['title']
+            print(f"  🛠️ Raw API Title: '{raw_title}'")
+            
+            # Clean title
+            clean_title = re.sub(r'\s*-\s*YouTube\s*$', '', raw_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'\s*\[.*?\]\s*$', '', clean_title)
+            print(f"  ✨ Cleaned Title: '{clean_title}'")
+            return _get_duration(url), clean_title
+            
+        print(f"  ❌ API Failed ({response.status_code}): {response.text[:200]}...")
     except Exception as e:
-        print(f"Error getting video info: {str(e)}")
-    
-    # Fallback to pytube
-    if duration == 0 or not title:
-        try:
-            yt = YouTube(url)
-            if not title:
-                title = yt.title
-            if duration == 0:
-                duration = yt.length
-        except Exception as e:
-            print(f"Pytube fallback failed: {str(e)}")
-    
-    return duration, title
+        print(f"  🚨 API Error: {str(e)}")
+
+    # HTML Fallback with detailed logging
+    try:
+        print("  🔄 Falling back to HTML parsing")
+        response = requests.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }, timeout=15)
+        
+        if response.status_code == 200:
+            print(f"  📄 HTML Snippet (title): {response.text[:2000]}...")
+            
+            # Multiple title extraction strategies
+            title_sources = [
+                (r'<meta name="title" content="([^"]+)"', 'meta tag'),
+                (r'"title":"([^"]+)"', 'JSON title'),
+                (r'<title>(.*?)</title>', 'HTML title')
+            ]
+            
+            for pattern, source in title_sources:
+                match = re.search(pattern, response.text)
+                if match:
+                    raw_title = html.unescape(match.group(1))
+                    print(f"  🛠️ Raw {source} Title: '{raw_title}'")
+                    clean_title = re.sub(r'\s*-\s*YouTube\s*$', '', raw_title)
+                    print(f"  ✨ Cleaned {source} Title: '{clean_title}'")
+                    return _get_duration(url), clean_title
+                    
+            print("  ❌ No title found in HTML")
+    except Exception as e:
+        print(f"  🚨 HTML Error: {str(e)}")
+
+    # Final Pytube fallback
+    try:
+        print("  🔄 Falling back to pytube")
+        yt = YouTube(url)
+        print(f"  🛠️ Raw Pytube Title: '{yt.title}'")
+        clean_title = re.sub(r'\s*[\(\[]\s*eng\s*sub.*', '', yt.title, flags=re.IGNORECASE)
+        print(f"  ✨ Cleaned Pytube Title: '{clean_title}'")
+        return yt.length, clean_title
+    except Exception as e:
+        print(f"  🚨 Pytube Failed: {str(e)}")
+        return 0, "Unknown Video"
 
 def get_transcripts(video_id):
     """Get transcripts with auto-translate fallback"""
