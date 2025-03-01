@@ -11,8 +11,7 @@ import concurrent.futures
 import boto3
 from dotenv import load_dotenv
 import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from http.cookiejar import MozillaCookieJar
 
 # Load environment variables from .env file
 load_dotenv()
@@ -131,54 +130,74 @@ class VideoDownloader:
         # Initialize S3 uploader
         self.s3 = S3Uploader()
         self.processed_episodes = set()
-        self._setup_advanced_headers()
-        self.proxy_pool = self._init_proxies()
-        self.session = requests.Session()
-        self.retry_strategy = self._create_retry_strategy()
+        self._setup_rotating_headers()
+        self.proxy_pool = [
+            None,  # Direct connection
+            'http://185.199.229.156:9292',
+            'http://185.199.228.220:9292'
+        ]
+        self.current_proxy = 0
+        
+        # Get the directory of the current script
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cookie_path = os.path.join(self.base_dir, 'cookies.txt')
+        self._verify_cookie_file()
     
-    def _setup_advanced_headers(self):
-        """Rotating headers with browser fingerprint simulation"""
+    def _verify_cookie_file(self):
+        """Ensure cookies exist and are valid"""
+        if not os.path.exists(self.cookie_path):
+            raise FileNotFoundError(f"Missing cookies.txt at {self.cookie_path}")
+            
+        file_size = os.path.getsize(self.cookie_path)
+        if file_size < 100:
+            print(f"⚠ Warning: cookies.txt seems small ({file_size} bytes). YouTube access may fail.")
+
+    def _get_ytdlp_command(self, url, output_path):
+        """Build yt-dlp command with cookies"""
+        return [
+            'yt-dlp',
+            '--cookies', self.cookie_path,
+            '--user-agent', self._random_user_agent(),
+            '-f', 'best[height<=720]',
+            '-o', output_path,
+            '--no-playlist',
+            url
+        ]
+
+    def _create_authenticated_session(self):
+        """Create requests session with cookies"""
+        session = requests.Session()
+        cookies = MozillaCookieJar()
+        cookies.load(self.cookie_path, ignore_discard=True)
+        session.cookies = cookies
+        session.headers.update({
+            'User-Agent': self._random_user_agent(),
+            'Referer': 'https://www.youtube.com/',
+        })
+        return session
+
+    def _setup_rotating_headers(self):
         self.user_agents = [
-            # Updated 2024 browser signatures
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
         ]
         self.headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'TE': 'trailers'
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'same-origin',
+            'Sec-Fetch-Site': 'same-origin'
         }
 
-    def _init_proxies(self):
-        """Initialize proxy pool with fallback to AWS rotating IPs"""
-        return [
-            os.environ.get('PRIMARY_PROXY'),  # Configure your premium proxy
-            'socks5://user:pass@proxy:1080',   # Backup SOCKS proxy
-            None  # Direct connection as last resort
-        ]
+    def _rotate_user_agent(self):
+        self.headers['User-Agent'] = random.choice(self.user_agents)
 
-    def _rotate_fingerprint(self):
-        """Rotate browser fingerprint for each request"""
-        self.headers.update({
-            'User-Agent': random.choice(self.user_agents),
-            'X-Client-Data': f'{random.getrandbits(32):08x}',
-            'Sec-Ch-Ua': f'"Not_A Brand";v="8", "Chromium";v="{random.randint(110, 125)}"'
-        })
-        self.session.headers.update(self.headers)
-
-    def _create_retry_strategy(self):
-        return Retry(
-            total=5,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST"]
-        )
+    def _get_proxy(self):
+        proxy = self.proxy_pool[self.current_proxy % len(self.proxy_pool)]
+        self.current_proxy += 1
+        return {'http': proxy, 'https': proxy} if proxy else None
 
     def check_subtitles(self, url):
         if not self.yt_dlp_available or not STRICT_MODE:
@@ -213,95 +232,103 @@ class VideoDownloader:
             return not STRICT_MODE
     
     def download_video(self, url, output_path):
-        """Multi-layer download strategy with advanced bypass techniques"""
-        try:
-            # Try yt-dlp with rotating configurations
-            return self._ytdlp_download(url, output_path)
-        except Exception as e:
-            logger.error(f"yt-dlp failed: {str(e)}")
+        """Multi-strategy download with automatic bot bypass"""
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        try:
-            # Fallback to requests-based download
-            return self._direct_download(url, output_path)
-        except Exception as e:
-            logger.error(f"Direct download failed: {str(e)}")
-            raise
+        # Strategy 1: yt-dlp with rotating configurations
+        if self.yt_dlp_available:
+            for attempt in range(3):
+                try:
+                    self._rotate_user_agent()
+                    cmd = self._get_ytdlp_command(url, output_path)
+                    print(f"Attempt {attempt+1} with yt-dlp: {' '.join(cmd)}")
+                    
+                    result = subprocess.run(
+                        cmd,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
+                        print("✓ yt-dlp download successful")
+                        return output_path
+                except subprocess.CalledProcessError as e:
+                    print(f"yt-dlp attempt {attempt+1} failed: {e.output[:200]}...")
+                time.sleep(random.uniform(1, 3))
 
-    def _ytdlp_download(self, url, output_path):
-        """Enhanced yt-dlp download with cookie generation"""
-        cmd = [
-            "yt-dlp",
-            "--no-check-certificates",
-            "--force-ipv4",
-            "--retries", "10",
-            "--throttled-rate", "2M",
-            "--socket-timeout", "45",
-            "--geo-bypass",
-            "--sleep-interval", str(random.randint(5, 15)),
-            "--proxy", self._get_current_proxy(),
-            "--format", "bestvideo[height<=720]+bestaudio/best[height<=720]",
-            "-o", output_path,
-            url
-        ]
-        
-        try:
-            subprocess.run(cmd, check=True, timeout=120)
-            return output_path
-        except subprocess.CalledProcessError as e:
-            if "cookies" in e.stderr.lower():
-                return self._ytdlp_oauth_download(url, output_path)
-            raise
-
-    def _ytdlp_oauth_authenticate(self):
-        """Automated OAuth authentication flow"""
-        oauth_cmd = [
-            "yt-dlp",
-            "--netrc",
-            "--cookies-from-browser", "chrome",
-            "--proxy", self._get_current_proxy()
-        ]
-        subprocess.run(oauth_cmd, check=True)
-
-    def _direct_download(self, url, output_path):
-        """Advanced direct download with browser simulation"""
-        video_id = url.split("v=")[1].split("&")[0]
-        
-        # Browser-like navigation sequence
-        self._rotate_fingerprint()
-        self.session.get(f"https://www.youtube.com/watch?v={video_id}", timeout=10)
-        time.sleep(random.uniform(1, 3))
-        
-        self._rotate_fingerprint()
-        embed_response = self.session.get(
-            f"https://www.youtube.com/embed/{video_id}",
-            timeout=10
-        )
-        
-        # Extract streaming data
-        streaming_data = re.search(
-            r'"streamingData":({.+?}),"', 
-            embed_response.text
-        ).group(1)
-        formats = json.loads(streaming_data)['formats']
-        
-        # Select best quality under 720p
-        best_format = max(
-            (f for f in formats if f.get('height', 0) <= 720),
-            key=lambda f: f.get('bitrate', 0)
-        )
-        
-        # Download with simulated human behavior
-        with open(output_path, 'wb') as f:
-            response = self.session.get(
-                best_format['url'], 
-                stream=True,
-                timeout=30
-            )
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                time.sleep(random.uniform(0.1, 0.3))  # Human-like download speed
+        # Strategy 2: Pytube with header rotation
+        for attempt in range(2):
+            try:
+                from pytube import YouTube
+                self._rotate_user_agent()
+                print(f"Trying pytube with UA: {self.headers['User-Agent']}")
                 
-        return output_path
+                yt = YouTube(
+                    url,
+                    use_oauth=True,
+                    allow_oauth_cache=True,
+                    proxies=self._get_proxy(),
+                    headers=self.headers
+                )
+                yt.bypass_age_gate()
+                stream = yt.streams.filter(
+                    progressive=True,
+                    file_extension='mp4'
+                ).order_by('resolution').desc().first()
+                
+                # Download with session
+                with requests.Session() as s:
+                    s.headers.update(self.headers)
+                    response = s.get(stream.url, proxies=self._get_proxy(), stream=True)
+                    with open(output_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            
+                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
+                        print("✓ Pytube download successful")
+                        return output_path
+            except Exception as e:
+                print(f"Pytube attempt {attempt+1} failed: {str(e)}")
+                time.sleep(1)
+
+        # Strategy 3: Direct download with session management
+        with requests.Session() as s:
+            s.headers.update(self.headers)
+            for attempt in range(2):
+                try:
+                    video_id = url.split("v=")[1].split("&")[0]
+                    embed_url = f"https://www.youtube.com/embed/{video_id}"
+                    
+                    # Simulate browser navigation
+                    s.get(embed_url, proxies=self._get_proxy())
+                    time.sleep(random.uniform(0.5, 2))
+                    response = s.get(url, proxies=self._get_proxy())
+                    
+                    # Find video URL in page
+                    match = re.search(r'"url":"(https://[^"]+googlevideo[^"]+)"', response.text)
+                    if not match:
+                        continue
+                        
+                    video_url = match.group(1)
+                    print(f"Found direct video URL: {video_url[:60]}...")
+                    
+                    # Download chunk
+                    with open(output_path, 'wb') as f:
+                        response = s.get(video_url, stream=True, proxies=self._get_proxy())
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            
+                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
+                        print("✓ Direct download successful")
+                        return output_path
+                        
+                except Exception as e:
+                    print(f"Direct download attempt {attempt+1} failed: {str(e)}")
+                    time.sleep(1)
+
+        print("⚠ All download methods failed")
+        return None
 
     def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
         """
@@ -501,6 +528,15 @@ class VideoDownloader:
         print(f"Successfully processed {completed_dramas}/{total_dramas} dramas")
         print("="*50)
         logger.info(f"Completed processing all dramas: {completed_dramas}/{total_dramas}")
+
+    def _random_user_agent(self):
+        """Rotate user agents to avoid detection"""
+        agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0'
+        ]
+        return random.choice(agents)
 
 if __name__ == "__main__":
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
