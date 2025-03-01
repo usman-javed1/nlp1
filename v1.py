@@ -27,16 +27,16 @@ STRICT_MODE = True
 MIN_VIDEO_SIZE = 1024 * 1024  # 1 MB
 
 # AWS S3 credentials from .env file
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")  # Default to us-east-1 if not specified
-S3_BUCKET = os.environ.get("S3_BUCKET")
-S3_COORD_BUCKET = os.environ.get("S3_COORD_BUCKET")
+AWS_ACCESS_KEY_ID1 = os.environ.get("AWS_ACCESS_KEY_ID1")
+AWS_SECRET_ACCESS_KEY1 = os.environ.get("AWS_SECRET_ACCESS_KEY1")
+AWS_REGION1 = os.environ.get("AWS_REGION1", "us-east-1")  # Default to us-east-1 if not specified
+S3_BUCKET1 = os.environ.get("S3_BUCKET1")
+S3_COORD_BUCKET1 = os.environ.get("S3_COORD_BUCKET1")
 
-print(f"AWS_ACCESS_KEY_ID: {AWS_ACCESS_KEY_ID}")
-print(f"AWS_SECRET_ACCESS_KEY: {AWS_SECRET_ACCESS_KEY}")
-print(f"S3_BUCKET: {S3_BUCKET}")
-print(f"S3_COORD_BUCKET: {S3_COORD_BUCKET}")
+print(f"AWS_ACCESS_KEY_ID1: {AWS_ACCESS_KEY_ID1}")
+print(f"AWS_SECRET_ACCESS_KEY1: {AWS_SECRET_ACCESS_KEY1}")
+print(f"S3_BUCKET1: {S3_BUCKET1}")
+print(f"S3_COORD_BUCKET1: {S3_COORD_BUCKET1}")
 print(f"STRICT_MODE: {STRICT_MODE}")
 
 try:
@@ -61,23 +61,23 @@ class S3Uploader:
         """Initialize S3 client using AWS credentials"""
         print("Initializing S3 uploader...")
         
-        if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY or not S3_BUCKET:
+        if not AWS_ACCESS_KEY_ID1 or not AWS_SECRET_ACCESS_KEY1 or not S3_BUCKET1:
             raise Exception("AWS credentials or bucket name missing from .env file")
             
         try:
             self.s3_client = boto3.client(
                 's3',
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-                region_name=AWS_REGION
+                AWS_ACCESS_KEY_ID1=AWS_ACCESS_KEY_ID1,
+                AWS_SECRET_ACCESS_KEY1=AWS_SECRET_ACCESS_KEY1,
+                region_name=AWS_REGION1
             )
             # Test connection by listing buckets
             self.s3_client.list_buckets()
             print(f"✓ Successfully connected to AWS S3")
-            print(f"✓ Using bucket: {S3_BUCKET}")
+            print(f"✓ Using bucket: {S3_BUCKET1}")
             # Verify bucket exists
-            self.s3_client.head_bucket(Bucket=S3_BUCKET)
-            print(f"✓ Bucket {S3_BUCKET} verified")
+            self.s3_client.head_bucket(Bucket=S3_BUCKET1)
+            print(f"✓ Bucket {S3_BUCKET1} verified")
             
         except Exception as e:
             logger.error(f"S3 initialization error: {str(e)}")
@@ -87,17 +87,17 @@ class S3Uploader:
         """Upload a file to S3 and return the URL"""
         try:
             s3_key = remote_path.lstrip('/')
-            print(f"Uploading file to S3: {local_path} → s3://{S3_BUCKET}/{s3_key}")
+            print(f"Uploading file to S3: {local_path} → s3://{S3_BUCKET1}/{s3_key}")
             file_size = os.path.getsize(local_path) / (1024 * 1024)
             print(f"File size: {file_size:.2f} MB")
             
             self.s3_client.upload_file(
                 local_path, 
-                S3_BUCKET, 
+                S3_BUCKET1, 
                 s3_key,
                 ExtraArgs={'ACL': 'public-read'}
             )
-            s3_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+            s3_url = f"https://{S3_BUCKET1}.s3.{AWS_REGION1}.amazonaws.com/{s3_key}"
             print(f"✓ Successfully uploaded file to S3: {s3_url}")
             return s3_url
         except Exception as e:
