@@ -433,38 +433,64 @@ class VideoDownloader:
         
         if not video_urls:
             try:
-                print("Falling back to pytube for playlist extraction...")
+                print("\n=== DEBUGGING EC2 PYTUBE ISSUE ===")
+                print("Attempting pytube playlist extraction...")
                 from pytube import Playlist
                 playlist = Playlist(data['link'])
                 
-                # EC2-specific fix: Use both modern and legacy regex patterns
-                playlist._video_regex = [
-                    re.compile(r'{"videoId":"(.+?)"'),
-                    re.compile(r'"url":"(/watch\?v=.+?)"')
-                ]
+                print(f"Original playlist URL: {playlist._playlist_url}")
+                print(f"Current _video_regex patterns: {playlist._video_regex}")
                 
+                # EC2-specific fix: Use multiple regex patterns
+                new_regex_patterns = [
+                    r'{"videoId":"(.+?)"',
+                    r'"url":"(/watch\?v=.+?)"',
+                    r'\/watch\?v=([a-zA-Z0-9_-]{11})'
+                ]
+                playlist._video_regex = [re.compile(pattern) for pattern in new_regex_patterns]
+                print(f"Updated _video_regex patterns: {[p.pattern for p in playlist._video_regex]}")
+
                 # Force playlist parsing with retries
-                for _ in range(3):  # Add retry loop
+                video_urls = []
+                for attempt in range(3):
                     try:
+                        print(f"\nAttempt {attempt+1} to parse playlist:")
                         video_urls = list(playlist.video_urls)
+                        print(f"Found {len(video_urls)} raw URLs in attempt {attempt+1}")
+                        print(f"Sample URLs: {video_urls[:3] if video_urls else 'None'}")
                         if video_urls:
                             break
                     except Exception as e:
-                        print(f"Retry {_+1} failed: {str(e)}")
+                        print(f"Retry {attempt+1} failed: {type(e).__name__} - {str(e)}")
                         time.sleep(2)
-                
+
                 # Validate URLs
-                video_urls = [url for url in video_urls if url.startswith('https://www.youtube.com/watch?v=')]
+                print("\nValidating extracted URLs:")
+                valid_urls = [url for url in video_urls if url.startswith('https://www.youtube.com/watch?v=')]
+                print(f"Found {len(valid_urls)} valid URLs out of {len(video_urls)} raw URLs")
+                if len(valid_urls) != len(video_urls):
+                    invalid_urls = set(video_urls) - set(valid_urls)
+                    print(f"Invalid URLs detected: {list(invalid_urls)[:3]} (showing first 3)")
+
+                video_urls = valid_urls
                 total_episodes = len(video_urls)
-                print(f"Found {total_episodes} episodes using pytube")
+                print(f"Final URL count: {total_episodes}")
                 
                 if not video_urls:
-                    raise ValueError("No valid video URLs extracted")
+                    raise ValueError("No valid video URLs extracted after 3 attempts")
                     
             except Exception as e:
-                print(f"EC2 Pytube extraction failed: {str(e)}")
-                logger.error(f"EC2 Playlist extraction error: {str(e)}")
+                print("\n=== EC2 EXTRACTION FAILURE DETAILS ===")
+                print(f"Error type: {type(e).__name__}")
+                print(f"Error message: {str(e)}")
+                if hasattr(e, 'exc_info') and e.exc_info:
+                    print(f"Traceback: {e.exc_info}")
+                logger.error(f"EC2 Playlist extraction error: {str(e)}", exc_info=True)
                 return
+
+        if not video_urls:
+            print("No videos found in playlist. Aborting drama processing.")
+            return
         
         successful_episodes = 0
         for url in video_urls:
