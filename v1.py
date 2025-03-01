@@ -139,8 +139,8 @@ class VideoDownloader:
         self.current_proxy = 0
         
         # Get the directory of the current script
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.cookie_path = os.path.join(self.base_dir, 'youtube_cookies.txt')
+        # self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cookie_path = '~/youtube_cookies.txt'
         self._verify_cookie_file()
     
     def _verify_cookie_file(self):
