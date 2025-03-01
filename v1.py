@@ -10,6 +10,7 @@ import tempfile
 import concurrent.futures
 import boto3
 from dotenv import load_dotenv
+import random
 
 # Load environment variables from .env file
 load_dotenv()
@@ -128,7 +129,37 @@ class VideoDownloader:
         # Initialize S3 uploader
         self.s3 = S3Uploader()
         self.processed_episodes = set()
+        self._setup_rotating_headers()
+        self.proxy_pool = [
+            None,  # Direct connection
+            'http://185.199.229.156:9292',
+            'http://185.199.228.220:9292'
+        ]
+        self.current_proxy = 0
     
+    def _setup_rotating_headers(self):
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
+        ]
+        self.headers = {
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'same-origin',
+            'Sec-Fetch-Site': 'same-origin'
+        }
+
+    def _rotate_user_agent(self):
+        self.headers['User-Agent'] = random.choice(self.user_agents)
+
+    def _get_proxy(self):
+        proxy = self.proxy_pool[self.current_proxy % len(self.proxy_pool)]
+        self.current_proxy += 1
+        return proxy  # Now returns the proxy string directly instead of a dict
+
     def check_subtitles(self, url):
         if not self.yt_dlp_available or not STRICT_MODE:
             return True
@@ -162,137 +193,121 @@ class VideoDownloader:
             return not STRICT_MODE
     
     def download_video(self, url, output_path):
-        """Download a video, preferring 720p MP4; if not available, download available format."""
+        """Multi-strategy download with automatic bot bypass"""
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        if STRICT_MODE and not self.check_subtitles(url):
-            print("Skipping video due to STRICT_MODE subtitle requirements")
-            return None
-        
-        # First attempt with format that doesn't require merging
+        # Strategy 1: yt-dlp with rotating configurations
         if self.yt_dlp_available:
-            try:
-                print(f"Downloading video using yt-dlp (best format): {url}")
-                # Modified command to request formats that don't need merging
-                cmd = [
-                    "yt-dlp",
-                    "-f", "best[height<=720]", # Request single best format (no merging required)
-                    "-o", output_path,
-                    "--no-playlist",
-                    url
-                ]
-                print(f"Running command: {' '.join(cmd)}")
-                
-                # Use shell=True on Windows if needed
-                use_shell = os.name == 'nt'  # True for Windows
-                
-                # Run with full output
-                process = subprocess.Popen(
-                    cmd, 
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    shell=use_shell
-                )
-                stdout, stderr = process.communicate()
-                
-                # Print full output for debugging
-                print(f"Command stdout: {stdout}")
-                if stderr:
-                    print(f"Command stderr: {stderr}")
+            for attempt in range(3):
+                try:
+                    self._rotate_user_agent()
+                    proxy = self._get_proxy()
+                    proxy_arg = f"--proxy {proxy}" if proxy else ""
                     
-                if process.returncode == 0:
-                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
-                        print(f"✓ Successfully downloaded video")
-                        return output_path
-                    else:
-                        actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                        print(f"⚠ yt-dlp claimed success but file is too small: {actual_size} bytes")
-                else:
-                    print(f"✗ yt-dlp download failed with return code: {process.returncode}")
-            except Exception as e:
-                print(f"✗ yt-dlp error: {str(e)}")
-            
-            # Try alternative formats
-            try:
-                print(f"Attempting alternate format download using yt-dlp for: {url}")
-                cmd_alt = [
-                    "yt-dlp",
-                    "--format-sort", "res:720,codec:h264", # Sort by resolution and codec
-                    "--format-sort-force",                  # Force format sorting
-                    "-f", "b[filesize<500M]",              # Choose best format under 500MB
-                    "-o", output_path,
-                    "--no-playlist",
-                    url
-                ]
-                print(f"Running command: {' '.join(cmd_alt)}")
-                
-                process = subprocess.Popen(
-                    cmd_alt, 
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    shell=use_shell
-                )
-                stdout, stderr = process.communicate()
-                
-                print(f"Command stdout: {stdout}")
-                if stderr:
-                    print(f"Command stderr: {stderr}")
+                    cmd = [
+                        "yt-dlp",
+                        "-f", "best[height<=720]",
+                        "-o", output_path,
+                        "--no-playlist",
+                        "--retries", "5",
+                        "--throttled-rate", "1M",
+                        "--socket-timeout", "30",
+                        "--force-ipv4",
+                        *proxy_arg.split(),  # Safely handle proxy argument
+                        "--sleep-interval", str(random.randint(2, 7)),
+                        url
+                    ]
+                    cmd = [c for c in cmd if c]  # Remove empty strings
+                    print(f"Attempt {attempt+1} with yt-dlp: {' '.join(cmd)}")
                     
-                if process.returncode == 0:
+                    result = subprocess.run(
+                        cmd,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
                     if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
-                        print(f"✓ Successfully downloaded video in alternate format using yt-dlp")
+                        print("✓ yt-dlp download successful")
                         return output_path
-                    else:
-                        actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                        print(f"⚠ Alternate format download succeeded but file is too small: {actual_size} bytes")
-                else:
-                    print(f"✗ Alternate format download failed with return code: {process.returncode}")
+                except subprocess.CalledProcessError as e:
+                    print(f"yt-dlp attempt {attempt+1} failed: {e.output[:200]}...")
+                time.sleep(random.uniform(1, 3))
+
+        # Strategy 2: Pytube with header rotation
+        for attempt in range(2):
+            try:
+                from pytube import YouTube
+                self._rotate_user_agent()
+                print(f"Trying pytube with UA: {self.headers['User-Agent']}")
+                
+                proxy = self._get_proxy()
+                proxies = {'http': proxy, 'https': proxy} if proxy else None
+                
+                yt = YouTube(
+                    url,
+                    use_oauth=True,
+                    allow_oauth_cache=True,
+                    proxies=proxies,
+                    headers=self.headers
+                )
+                yt.bypass_age_gate()
+                stream = yt.streams.filter(
+                    progressive=True,
+                    file_extension='mp4'
+                ).order_by('resolution').desc().first()
+                
+                # Download with session
+                with requests.Session() as s:
+                    s.headers.update(self.headers)
+                    response = s.get(stream.url, proxies=proxies, stream=True)
+                    with open(output_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            
+                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
+                        print("✓ Pytube download successful")
+                        return output_path
             except Exception as e:
-                print(f"✗ Alternate format yt-dlp error: {str(e)}")
-        
-        # Fallback to pytube
-        try:
-            from pytube import YouTube
-            print(f"Falling back to pytube for download: {url}")
-            yt = YouTube(url)
-            # Try to filter for 720p mp4 streams; if none, take the highest resolution available
-            streams = yt.streams.filter(res="720p", file_extension="mp4")
-            if streams:
-                video = streams.first()
-            else:
-                video = yt.streams.get_highest_resolution()
-            downloaded_path = video.download(output_path=os.path.dirname(output_path))
-            if downloaded_path != output_path and os.path.exists(downloaded_path):
-                os.rename(downloaded_path, output_path)
-            if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
-                print(f"✓ Successfully downloaded video using pytube")
-                return output_path
-            else:
-                print("⚠ pytube claimed success but file is missing or too small")
-        except Exception as e:
-            print(f"✗ pytube download error: {str(e)}")
-        
-        # Fallback to direct download via requests (last resort)
-        try:
-            print(f"Last resort: Trying direct download via requests: {url}")
-            response = requests.get(url, stream=True)
-            if response.status_code == 200:
-                with open(output_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
-                    print(f"✓ Successfully downloaded video using requests")
-                    return output_path
-                else:
-                    print("⚠ requests download succeeded but file is missing or too small")
-            else:
-                print(f"✗ requests download failed with status code: {response.status_code}")
-        except Exception as e:
-            print(f"✗ requests download error: {str(e)}")
-        
-        print(f"All download methods failed for URL: {url}")
+                print(f"Pytube attempt {attempt+1} failed: {str(e)}")
+                time.sleep(1)
+
+        # Strategy 3: Direct download with session management
+        with requests.Session() as s:
+            s.headers.update(self.headers)
+            for attempt in range(2):
+                try:
+                    video_id = url.split("v=")[1].split("&")[0]
+                    embed_url = f"https://www.youtube.com/embed/{video_id}"
+                    
+                    # Simulate browser navigation
+                    s.get(embed_url, proxies=self._get_proxy())
+                    time.sleep(random.uniform(0.5, 2))
+                    response = s.get(url, proxies=self._get_proxy())
+                    
+                    # Find video URL in page
+                    match = re.search(r'"url":"(https://[^"]+googlevideo[^"]+)"', response.text)
+                    if not match:
+                        continue
+                        
+                    video_url = match.group(1)
+                    print(f"Found direct video URL: {video_url[:60]}...")
+                    
+                    # Download chunk
+                    with open(output_path, 'wb') as f:
+                        response = s.get(video_url, stream=True, proxies=self._get_proxy())
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            
+                    if os.path.exists(output_path) and os.path.getsize(output_path) >= MIN_VIDEO_SIZE:
+                        print("✓ Direct download successful")
+                        return output_path
+                        
+                except Exception as e:
+                    print(f"Direct download attempt {attempt+1} failed: {str(e)}")
+                    time.sleep(1)
+
+        print("⚠ All download methods failed")
         return None
 
     def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
