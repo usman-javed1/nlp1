@@ -296,116 +296,135 @@ class VideoDownloader:
         return None
 
     def process_episode(self, drama_name, url, episodes_list, max_episode, order_index=None):
-        """
-        Process a single episode: verify the extracted episode number from the title is in episodes_list.
-        If so, download and upload the video.
-        """
+        """Process a single episode: extract number, download video and upload to S3"""
         try:
-            duration, title = get_video_info(url)
-            if not title:
-                print(f"❌ Could not retrieve video title for URL: {url}, skipping episode")
+            # Get video info
+            try:
+                duration, title = get_video_info(url)
+                if not title:
+                    print(f"❌ Could not retrieve video title for URL: {url}")
+                    return False
+                
+                print(f"Processing video title: {title}")
+                print(f"Video duration: {duration} seconds")
+            except Exception as e:
+                print(f"❌ Error retrieving video info: {str(e)}")
                 return False
             
-            print(f"Video title: {title}")
-            print(f"Video duration: {duration}")
-            
+            # Extract episode number with better error handling
             ep_num = None
             try:
                 ep_num = extract_episode_number(title, max_episode)
+                if ep_num is None:
+                    print(f"❌ Could not extract episode number from title: '{title}'")
+                    return False
             except Exception as e:
                 print(f"❌ Error extracting episode number: {str(e)}")
                 return False
             
-            if ep_num is None:
-                print(f"❌ Could not extract episode number from title '{title}', skipping episode")
-                return False
+            print(f"✓ Extracted episode number: {ep_num}")
             
+            # Check if this episode should be downloaded
             if ep_num not in episodes_list:
                 print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
                 return False
             
+            # Check if already processed
             episode_key = f"{drama_name}_ep{ep_num}"
             if episode_key in self.processed_episodes:
                 print(f"⚠ Episode {ep_num} already processed. Skipping.")
                 return True
             
+            # Check subtitles if in strict mode
+            if STRICT_MODE and not self.check_subtitles(url):
+                print(f"⚠ Skipping episode {ep_num} due to subtitle restrictions in strict mode")
+                return False
+            
             print(f"Processing {drama_name} - Episode {ep_num}")
             print(f"Video URL: {url}")
             
+            # Create temp directory for downloads
             episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
             os.makedirs(episode_dir, exist_ok=True)
             
-            video_id = url_to_id(url)
-            output_filename = f"{drama_name}_Ep{ep_num}_{video_id}.mp4"
-            output_path = os.path.join(episode_dir, output_filename)
-            
-            downloaded_path = self.download_video(url, output_path)
-            if not downloaded_path:
-                logger.error(f"Failed to download episode {ep_num}")
-                return False
-            
-            file_size = os.path.getsize(downloaded_path) / (1024 * 1024)
-            print(f"Downloaded video size: {file_size:.2f} MB")
-            
-            remote_path = f"/videos/{drama_name}/{output_filename}"
-            s3_url = self.s3.upload_file(downloaded_path, remote_path)
-            if s3_url:
-                print(f"✓ Video uploaded to S3: {s3_url}")
-            else:
-                print(f"✗ Failed to upload video to S3")
-                return False
-            
+            # Prepare output path
             try:
-                os.remove(downloaded_path)
-                print(f"✓ Removed temporary file: {downloaded_path}")
+                video_id = url_to_id(url)
+                output_filename = f"{drama_name}_Ep{ep_num}_{video_id}.mp4"
+                output_path = os.path.join(episode_dir, output_filename)
+                
+                downloaded_path = self.download_video(url, output_path)
+                if not downloaded_path:
+                    logger.error(f"Failed to download episode {ep_num}")
+                    return False
+                
+                file_size = os.path.getsize(downloaded_path) / (1024 * 1024)
+                print(f"Downloaded video size: {file_size:.2f} MB")
+                
+                remote_path = f"/videos/{drama_name}/{output_filename}"
+                s3_url = self.s3.upload_file(downloaded_path, remote_path)
+                if s3_url:
+                    print(f"✓ Video uploaded to S3: {s3_url}")
+                else:
+                    print(f"✗ Failed to upload video to S3")
+                    return False
+                
+                try:
+                    os.remove(downloaded_path)
+                    print(f"✓ Removed temporary file: {downloaded_path}")
+                except Exception as e:
+                    print(f"⚠ Error removing temporary file: {str(e)}")
+                
+                print("Looking for transcript files...")
+                transcript_base = os.path.join(
+                    TRANSCRIPT_DIR, 
+                    drama_name,
+                    f"{drama_name}_ep{ep_num}"
+                )
+                transcript_files = [
+                    f"{transcript_base}_English.txt",
+                    f"{transcript_base}_Urdu_T.txt",
+                    f"{transcript_base}_Urdu.txt"
+                ]
+                
+                transcript_count = 0
+                for transcript_file in transcript_files:
+                    if os.path.exists(transcript_file):
+                        print(f"Found transcript: {transcript_file}")
+                        transcript_filename = os.path.basename(transcript_file)
+                        s3_transcript_path = f"/transcripts/{drama_name}/{transcript_filename}"
+                        tr_url = self.s3.upload_file(transcript_file, s3_transcript_path)
+                        if tr_url:
+                            print(f"✓ Uploaded transcript to S3: {tr_url}")
+                            transcript_count += 1
+                
+                if transcript_count == 0:
+                    print("No transcript files found")
+                else:
+                    print(f"✓ Processed {transcript_count} transcript files")
+                
+                try:
+                    os.rmdir(episode_dir)
+                except:
+                    pass
+                
+                self.processed_episodes.add(episode_key)
+                print(f"✓ Marked episode as processed: {episode_key}")
+                print(f"--------- FINISHED {drama_name} Episode {ep_num} ---------\n")
+                return True
+            
             except Exception as e:
-                print(f"⚠ Error removing temporary file: {str(e)}")
-            
-            print("Looking for transcript files...")
-            transcript_base = os.path.join(
-                TRANSCRIPT_DIR, 
-                drama_name,
-                f"{drama_name}_ep{ep_num}"
-            )
-            transcript_files = [
-                f"{transcript_base}_English.txt",
-                f"{transcript_base}_Urdu_T.txt",
-                f"{transcript_base}_Urdu.txt"
-            ]
-            
-            transcript_count = 0
-            for transcript_file in transcript_files:
-                if os.path.exists(transcript_file):
-                    print(f"Found transcript: {transcript_file}")
-                    transcript_filename = os.path.basename(transcript_file)
-                    s3_transcript_path = f"/transcripts/{drama_name}/{transcript_filename}"
-                    tr_url = self.s3.upload_file(transcript_file, s3_transcript_path)
-                    if tr_url:
-                        print(f"✓ Uploaded transcript to S3: {tr_url}")
-                        transcript_count += 1
-            
-            if transcript_count == 0:
-                print("No transcript files found")
-            else:
-                print(f"✓ Processed {transcript_count} transcript files")
-            
-            try:
-                os.rmdir(episode_dir)
-            except:
-                pass
-            
-            self.processed_episodes.add(episode_key)
-            print(f"✓ Marked episode as processed: {episode_key}")
-            print(f"--------- FINISHED {drama_name} Episode {ep_num} ---------\n")
-            return True
+                logger.error(f"Episode processing error: {str(e)}")
+                print(f"✗ Error processing episode: {str(e)}")
+                try:
+                    os.rmdir(episode_dir)
+                except:
+                    pass
+                return False
         
         except Exception as e:
             logger.error(f"Episode processing error: {str(e)}")
             print(f"✗ Error processing episode: {str(e)}")
-            try:
-                os.rmdir(episode_dir)
-            except:
-                pass
             return False
     
     def process_drama_sequentially(self, drama_name):
