@@ -21,7 +21,7 @@ TEMP_DIR = tempfile.gettempdir()
 TRANSCRIPT_DIR = "transcripts"      # Only for finding transcripts, not storing
 MAX_THREADS = 4
 INSTANCE_ID = os.environ.get("AWS_INSTANCE_ID", f"worker-{threading.get_native_id()}")
-STRICT_MODE = True
+STRICT_MODE = False
 
 # Set a minimal file size (in bytes) to consider the download valid (e.g., 1 MB)
 MIN_VIDEO_SIZE = 1024 * 1024  # 1 MB
