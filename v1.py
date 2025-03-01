@@ -9,7 +9,10 @@ import subprocess
 import tempfile
 import concurrent.futures
 import boto3
+
 from dotenv import load_dotenv
+import warnings
+from functools import wraps
 
 # Load environment variables from .env file
 load_dotenv()
@@ -55,6 +58,78 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("video_downloader")
+
+# Monkey-patch extract_episode_number
+from transcript_fetcher import extract_episode_number as original_extract_episode_number
+
+def enhanced_extract_episode_number(title, max_episode):
+    # First try original implementation
+    result = original_extract_episode_number(title, max_episode)
+    if result is not None:
+        return result
+    
+    # New patterns to handle numeric titles and K suffixes
+    patterns = [
+        r'^(\d+)(k)?$',  # 72K style
+        r'\b(\d+)\s*-\s*.*',  # Number at start of title
+        r'.*?(\d+)\s*$'  # Number at end of title
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, title.strip(), re.IGNORECASE)
+        if match:
+            try:
+                num = int(match.group(1))
+                if 1 <= num <= max_episode:
+                    return num
+            except ValueError:
+                continue
+    return None
+
+# Replace the imported function
+extract_episode_number = enhanced_extract_episode_number
+
+# Enhanced video info retrieval with fallback
+from transcript_fetcher import get_video_info as original_get_video_info
+
+def get_video_info_with_retry(url):
+    """Get video info with 3 retries and yt-dlp fallback"""
+    for attempt in range(3):
+        try:
+            duration, title = original_get_video_info(url)
+            if duration > 0 and title not in ['Unknown Title', '']:
+                return duration, title
+            time.sleep(1)  # Wait before retry
+        except Exception as e:
+            print(f"Video info attempt {attempt+1} failed: {str(e)}")
+    
+    # Fallback to yt-dlp
+    try:
+        cmd = [
+            'yt-dlp',
+            '--get-title',
+            '--get-duration',
+            '--no-warnings',
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0:
+            output = result.stdout.strip().split('\n')
+            title = output[0] if len(output) > 0 else 'Unknown Title'
+            duration_str = output[1] if len(output) > 1 else '0'
+            
+            # Convert duration to seconds
+            parts = list(map(int, duration_str.split(':')))
+            duration = sum(x * 60**i for i, x in enumerate(reversed(parts)))
+            return duration, title
+    except Exception as e:
+        print(f"yt-dlp fallback failed: {str(e)}")
+    
+    return 0, 'Unknown Title'
+
+# Replace the original function
+get_video_info = get_video_info_with_retry
 
 class S3Uploader:
     def __init__(self):
@@ -436,21 +511,12 @@ class VideoDownloader:
                 print("Falling back to pytube for playlist extraction...")
                 from pytube import Playlist
                 playlist = Playlist(data['link'])
-                # Updated regex to match modern YouTube JSON structure
-                playlist._video_regex = re.compile(r'"videoId":"([\w-]{11})"')
+                playlist._video_regex = re.compile(r"\"url\":\"(/watch\?v=[\w-]*)")
                 video_urls = list(playlist.video_urls)
                 total_episodes = len(video_urls)
                 print(f"Found {total_episodes} episodes using pytube")
-                
-                # Add validation for extracted URLs
-                video_urls = [url for url in video_urls if url.startswith('https://')]
-                if not video_urls:
-                    raise ValueError("No valid video URLs found in playlist")
-                    
             except Exception as e:
                 print(f"Pytube playlist extraction error: {str(e)}")
-                logger.error(f"Playlist extraction failed: {str(e)}")
-                return
         
         if not video_urls:
             print("No videos found in playlist. Aborting drama processing.")
