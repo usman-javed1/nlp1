@@ -300,34 +300,43 @@ class VideoDownloader:
         Process a single episode: verify the extracted episode number from the title is in episodes_list.
         If so, download and upload the video.
         """
-        duration, title = get_video_info(url)
-        if not title:
-            print("❌ Could not retrieve video title, skipping episode")
-            return False
-        
-        ep_num = extract_episode_number(title, max_episode)
-        if ep_num is None:
-            print("❌ Could not extract episode number, skipping episode")
-            return False
-        
-        if ep_num not in episodes_list:
-            print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
-            return False
-        
-        episode_key = f"{drama_name}_ep{ep_num}"
-        if episode_key in self.processed_episodes:
-            print(f"⚠ Episode {ep_num} already processed. Skipping.")
-            return True
-        
-        print(f"Processing {drama_name} - Episode {ep_num}")
-        print(f"Video URL: {url}")
-        
-        episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
-        os.makedirs(episode_dir, exist_ok=True)
-        
         try:
+            duration, title = get_video_info(url)
+            if not title:
+                print(f"❌ Could not retrieve video title for URL: {url}, skipping episode")
+                return False
+            
+            print(f"Video title: {title}")
+            print(f"Video duration: {duration}")
+            
+            ep_num = None
+            try:
+                ep_num = extract_episode_number(title, max_episode)
+            except Exception as e:
+                print(f"❌ Error extracting episode number: {str(e)}")
+                return False
+            
+            if ep_num is None:
+                print(f"❌ Could not extract episode number from title '{title}', skipping episode")
+                return False
+            
+            if ep_num not in episodes_list:
+                print(f"⏭️ Episode {ep_num} is not in the download list {episodes_list}. Skipping.")
+                return False
+            
+            episode_key = f"{drama_name}_ep{ep_num}"
+            if episode_key in self.processed_episodes:
+                print(f"⚠ Episode {ep_num} already processed. Skipping.")
+                return True
+            
+            print(f"Processing {drama_name} - Episode {ep_num}")
+            print(f"Video URL: {url}")
+            
+            episode_dir = os.path.join(TEMP_DIR, f"drama_{int(time.time())}_{threading.get_native_id()}")
+            os.makedirs(episode_dir, exist_ok=True)
+            
             video_id = url_to_id(url)
-            output_filename = f"{drama_name}_Ep{ep_num}.mp4"
+            output_filename = f"{drama_name}_Ep{ep_num}_{video_id}.mp4"
             output_path = os.path.join(episode_dir, output_filename)
             
             downloaded_path = self.download_video(url, output_path)
