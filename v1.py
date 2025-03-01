@@ -67,8 +67,8 @@ class S3Uploader:
         try:
             self.s3_client = boto3.client(
                 's3',
-                AWS_ACCESS_KEY_ID1=AWS_ACCESS_KEY_ID1,
-                AWS_SECRET_ACCESS_KEY1=AWS_SECRET_ACCESS_KEY1,
+                aws_access_key_id=AWS_ACCESS_KEY_ID1,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY1,
                 region_name=AWS_REGION1
             )
             # Test connection by listing buckets
